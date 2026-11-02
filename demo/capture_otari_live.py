@@ -12,6 +12,7 @@ import subprocess  # Manage the server child process.
 import sys  # Reuse the same Python interpreter for the server.
 import time  # Poll for server startup.
 import urllib.request  # Drive the API flow and confirm the comparison payload.
+import urllib.error  # Read the app's error body when a comparison call fails.
 from playwright.sync_api import sync_playwright  # The browser driver for video + screenshots.
 
 HERE = os.path.dirname(os.path.abspath(__file__))  # This demo/ folder.
@@ -30,7 +31,13 @@ SERVER_ENV = {
     "OTARI_MODEL_A": os.environ.get("OTARI_MODEL_A", ""),
     "OTARI_MODEL_B": os.environ.get("OTARI_MODEL_B", ""),
     "OTARI_CHAT_PATH": os.environ.get("OTARI_CHAT_PATH", ""),
+    "OTARI_AUTH": os.environ.get("OTARI_AUTH", ""),
 }  # Gateway values only; the key travels to the child process, never to stdout or files.
+# Pass the sandbox egress proxy through too: without it the child cannot reach the
+# gateway at all (direct egress fails fast, which the app reports as a 502).
+for _proxy_key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy"):
+    if _proxy_key in os.environ:
+        SERVER_ENV[_proxy_key] = os.environ[_proxy_key]
 QUESTION = "What is the first step of first aid for a bleeding wound?"  # The demo question, same as the stub capture.
 
 os.makedirs(SHOTS, exist_ok=True)  # Prepare the stills folder.
@@ -58,8 +65,12 @@ try:  # Guard the whole capture so the server always stops afterwards.
         APP_URL + "/api/compare",  # The comparison endpoint.
         data=json.dumps({"question": QUESTION, "context": "Apply direct pressure."}).encode("utf-8"),  # The demo payload.
         headers={"Content-Type": "application/json"}, method="POST")  # JSON POST.
-    with urllib.request.urlopen(req, timeout=90) as resp:  # Run the real live comparison (gateway calls can queue).
-        payload = json.loads(resp.read().decode("utf-8"))  # The verbatim server reply.
+    try:  # Run the comparison, but show the app's error text if it fails.
+        with urllib.request.urlopen(req, timeout=90) as resp:  # Run the real live comparison (gateway calls can queue).
+            payload = json.loads(resp.read().decode("utf-8"))  # The verbatim server reply.
+    except urllib.error.HTTPError as err:  # The app answered with an error; show its body before failing.
+        print("Compare failed: HTTP %s: %s" % (err.code, err.read().decode("utf-8", "replace")[:500]))  # The app's error text, never the key.
+        raise  # Fail loudly, with the cause visible.
     with open(os.path.join(HERE, "transcript-compare-live.json"), "w") as handle:  # Save the live transcript.
         json.dump(payload, handle, indent=2)  # Pretty-printed, unmodified content.
     with sync_playwright() as pw:  # Open the browser driver.

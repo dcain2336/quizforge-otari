@@ -1,0 +1,15 @@
+{
+  "mode": "live",
+  "question": "What is the first step of first aid for a bleeding wound?",
+  "model_a": {
+    "model": "deepseek/deepseek-v4.1-flash-1017",
+    "answer": "Apply direct pressure.\n\nBottom line: The first step is to apply direct pressure."
+  },
+  "model_b": {
+    "model": "meta/llama-3.1-8b-instruct",
+    "answer": "Apply direct pressure.\n\nBottom line: The first step of first aid for a bleeding wound is to apply direct pressure."
+  },
+  "agreement": "agree",
+  "agreement_note": "Both models cover substantially the same ground (overlap 70% of content words).",
+  "verdict": "Both models agree \u2014 that raises confidence, but the study material is still the authority. Re-read it once before moving on."
+}

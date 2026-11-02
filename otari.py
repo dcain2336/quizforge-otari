@@ -10,9 +10,9 @@
 # clearly labeled demonstration answers so the comparison view can be verified end to end.  # Honesty continued: stub answers exist to verify the view.
 # Stub mode NEVER pretends to be live: every stub response carries mode "stub" and the UI  # Honesty continued: the stub label travels with the data.
 # banners it. Set OTARI_API_KEY + OTARI_BASE_URL + model slugs to go live, and confirm the  # How to go live: the three values plus the doc check.
-# endpoint shape against the onboarding doc first — the client assumes an OpenAI-compatible  # Assumption flagged: OpenAI-compatible chat completions.
-# POST {base}/chat/completions with a Bearer key, which is the shape Otari documents for its  # Assumption continued: the documented gateway shape.
-# gateway; if the doc shows a different path, set OTARI_CHAT_PATH to match.  # Escape hatch: one env var fixes a different path.
+# endpoint shape verified live 2026-11-02: Otari serves under /api/v1 (not /v1) with an  # Verified: the dashboard form works, the docs form 404s.
+# Otari-Key header — set OTARI_BASE_URL=https://otari.ai/api/v1 and OTARI_AUTH=otari-key.  # Verified continued: the working shape.
+# The Bearer form is kept for the docs shape; if the doc shows another path, set OTARI_CHAT_PATH.  # Escape hatch: one env var fixes a different path.
 # SECURITY RULE: the Otari key lives in the environment (or a local .env file), NEVER in code  # Security rule: where the key lives.
 # or this repo. This module reads it at call time and never prints it.  # Security rule continued: the key is never echoed.
 # Zero third-party dependencies: it uses only Python's standard library, like the rest of QuizForge.  # Design choice 3: no installs needed.
@@ -26,6 +26,10 @@ import re  # Make the re module available.
 import urllib.request  # Make the urllib.request module available.
 # Import urllib.error so HTTP failures can be caught and reported cleanly.  # Library: urllib.error.
 import urllib.error  # Make the urllib.error module available.
+# Import the http.client module so dropped gateway connections can be recognized and retried.  # Library: http.client.
+import http.client  # Make the http.client module available.
+# Import the time module so rate-limit retries can wait between tries.  # Library: time.
+import time  # Make the time module available.
 # Define the default chat path, overridden by OTARI_CHAT_PATH if the doc shows another.  # Constant: chat path default.
 DEFAULT_CHAT_PATH = "/chat/completions"  # The OpenAI-compatible chat path, per the gateway assumption above.
 # Define how long (in seconds) a gateway call may take before we give up.  # Constant: HTTP timeout.
@@ -49,7 +53,7 @@ def _api_key():  # Define _api_key, which returns the API key or an empty string
 # Start the getter that reads the chat path fresh from the environment.  # Function: _chat_path.
 def _chat_path():  # Define _chat_path, which returns the chat path each time it is called.
     # Read OTARI_CHAT_PATH live, defaulting to the OpenAI-compatible path.  # Why live: the doc may show a different path.
-    return os.environ.get("OTARI_CHAT_PATH", DEFAULT_CHAT_PATH)  # One override fixes a doc mismatch.
+    return os.environ.get("OTARI_CHAT_PATH") or DEFAULT_CHAT_PATH  # Empty counts as unset: one override fixes a doc mismatch.
 # Start the predicate that reports whether live gateway calls are possible.  # Function: is_configured.
 def is_configured():  # Define is_configured, which returns True only when key and URL both exist.
     # Both values are required: a key with no URL (or the reverse) cannot make a call.  # Rule: both or neither.
@@ -71,25 +75,38 @@ def chat(prompt, model):  # Define chat, which calls the gateway and returns the
     if not is_configured():  # No key or no URL means no live call is possible.
         raise OtariError("Otari is not configured: set OTARI_API_KEY and OTARI_BASE_URL (see .env.example).")  # Say exactly which values are missing.
     # Build the OpenAI-compatible request body: model plus a single user message.  # Step: request body.
-    payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}  # The gateway's chat shape, per the documented assumption.
+    payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 400}  # The gateway's chat shape, plus a cap so long answers cannot cut off mid-body.
     # Encode the body as UTF-8 JSON bytes for the POST.  # Step: encode the body.
     body = json.dumps(payload).encode("utf-8")  # Convert the dictionary into bytes.
     # Build the POST request against the configured base URL plus the chat path.  # Step: request object.
     request = urllib.request.Request(_base_url() + _chat_path(), data=body, method="POST")  # The full gateway URL for this call.
     # Declare the body as JSON so the gateway parses it.  # Step: content-type header.
     request.add_header("Content-Type", "application/json")  # Tell the gateway the body is JSON.
-    # Attach the key as a Bearer token, the gateway's auth shape.  # Step: auth header.
-    request.add_header("Authorization", "Bearer " + _api_key())  # The key travels only in this header.
+    # Attach the key in the gateway's auth shape: Otari-Key header when OTARI_AUTH says so, else Bearer.  # Step: auth header.
+    if os.environ.get("OTARI_AUTH", "bearer").lower() == "otari-key":  # Dashboard form: Otari-Key header.
+        request.add_header("Otari-Key", _api_key())  # The key travels only in this header.
+    else:  # Docs form: Bearer token.
+        request.add_header("Authorization", "Bearer " + _api_key())  # The key travels only in this header.
     # Use the browser-like user agent so the edge does not reject the call.  # Step: user-agent header.
     request.add_header("User-Agent", USER_AGENT)  # A plain user agent that API edges accept.
-    try:  # Begin the guarded call, so gateway failures become a readable OtariError.
-        # Open the URL with the timeout, and read the reply inside the context manager.  # Step: perform the call.
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:  # Send the POST and hold the reply.
-            raw = response.read().decode("utf-8")  # Read the reply body as text.
-    except urllib.error.HTTPError as err:  # The gateway answered with an HTTP error status.
-        raise OtariError("Otari gateway HTTP %s (check OTARI_API_KEY, OTARI_BASE_URL, and model slug)." % err.code)  # Report the status, not the key.
-    except urllib.error.URLError as err:  # The gateway could not be reached at all.
-        raise OtariError("Otari gateway unreachable: %s (check OTARI_BASE_URL)." % err.reason)  # Report the reachability failure.
+    raw = None  # The reply body, filled by a successful call below.
+    for _attempt in (1, 2, 3):  # Three tries: the gateway sometimes drops a connection or rate-limits a free-tier call.
+        try:  # Begin the guarded call, so gateway failures become a readable OtariError.
+            # Open the URL with the timeout, and read the reply inside the context manager.  # Step: perform the call.
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:  # Send the POST and hold the reply.
+                raw = response.read().decode("utf-8")  # Read the reply body as text.
+            break  # A full reply arrived; no retry needed.
+        except urllib.error.HTTPError as err:  # The gateway answered with an HTTP error status.
+            if err.code == 429 and _attempt < 3:  # Free-tier rate limit: wait, then try again.
+                time.sleep(5 if _attempt == 1 else 15)  # Short wait first, longer on the second try.
+                continue  # Retry the call after the wait.
+            raise OtariError("Otari gateway HTTP %s (check OTARI_API_KEY, OTARI_BASE_URL, and model slug)." % err.code)  # Report the status, not the key.
+        except urllib.error.URLError as err:  # The gateway could not be reached at all.
+            raise OtariError("Otari gateway unreachable: %s (check OTARI_BASE_URL)." % err.reason)  # Report the reachability failure.
+        except (http.client.RemoteDisconnected, http.client.IncompleteRead):  # The gateway dropped the connection mid-reply.
+            if _attempt == 3:  # All tries dropped; say so plainly instead of hanging up silently.
+                raise OtariError("Otari gateway dropped the connection three times; retry the comparison.")  # Report the dropped connection.
+            continue  # A drop: try again before giving up.
     # Parse the reply body as JSON, failing readably if it is not JSON.  # Step: parse the reply.
     try:  # Begin the guarded parse, so a non-JSON reply becomes a readable error.
         data = json.loads(raw)  # Convert the reply text into a dictionary.
