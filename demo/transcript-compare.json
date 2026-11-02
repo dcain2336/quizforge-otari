@@ -1,0 +1,15 @@
+{
+  "mode": "stub",
+  "question": "What is the first step of first aid for a bleeding wound?",
+  "model_a": {
+    "model": "model-a (stub)",
+    "answer": "Short answer: the key point behind \"What is the first step of first aid for a bleeding wound?\" is the one your study material states most directly \u2014 learn that first, then build outward. Bottom line: master the core statement before the details."
+  },
+  "model_b": {
+    "model": "model-b (stub)",
+    "answer": "A fuller view on \"What is the first step of first aid for a bleeding wound?\": the core statement matters, but so do the exceptions and edge cases around it \u2014 a good answer names both the rule and where it bends. Bottom line: know the rule, the exceptions, and when each applies."
+  },
+  "agreement": "differ",
+  "agreement_note": "The models go in different directions (only 23% of content words overlap) \u2014 treat neither as settled until the study material is checked.",
+  "verdict": "The models disagree \u2014 neither one settles it. Go back to the study material and decide which answer it actually supports."
+}
